@@ -11,13 +11,9 @@ import scipy.stats as stats
 from io import BytesIO
 
 
-pw = st.text_input("Enter password", type="password")
-if pw != "secret123":
-    st.stop()
     
 # --- Color Palette ---
-PALETTE = {let
-    "navy": "#10282D",
+PALETTE = {"navy": "#10282D",
     "dark_teal": "#1E4746",
     "moderate_teal": "#3F7F6F",
     "light_teal": "#53A28A",
