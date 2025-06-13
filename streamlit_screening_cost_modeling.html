@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Screening Cost Model</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 2rem;
+      max-width: 800px;
+      margin: auto;
+    }
+    label {
+      font-weight: bold;
+      display: block;
+      margin-top: 1rem;
+    }
+    input {
+      width: 100%;
+      padding: 0.5rem;
+      margin-top: 0.3rem;
+      margin-bottom: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    #totalCost {
+      font-size: 1.5rem;
+      margin: 1rem 0;
+    }
+    canvas {
+      max-width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <h1>Screening Cost Model</h1>
+
+  <div id="inputs"></div>
+  <div id="totalCost">Total Cost: $0.00</div>
+  <canvas id="costChart" height="300"></canvas>
+
+  <script>
+    const inputDefs = {
+      numVariants: 192,
+      pctCorrect: 0.84,
+      roundLength: 4.4,
+      delayWeeks: 1.1,
+      costPerVariant: 30.0,
+      costSeq: 5000.0,
+      fteHours: 60,
+      fteCostPerHour: 125,
+    };
+
+    const inputContainer = document.getElementById("inputs");
+    const inputElements = {};
+
+    for (const [key, defaultValue] of Object.entries(inputDefs)) {
+      const label = document.createElement("label");
+      label.textContent = key.replace(/([A-Z])/g, " $1");
+      const input = document.createElement("input");
+      input.type = "number";
+      input.step = "any";
+      input.value = defaultValue;
+      input.id = key;
+      input.addEventListener("input", updateModel);
+      inputContainer.appendChild(label);
+      inputContainer.appendChild(input);
+      inputElements[key] = input;
+    }
+
+    const costDisplay = document.getElementById("totalCost");
+    const ctx = document.getElementById("costChart").getContext("2d");
+
+    let chart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: ["Synthesis", "Lost Variants", "Delay", "Researcher", "Sequencing"],
+        datasets: [{
+          label: "Cost Breakdown ($)",
+          data: [0, 0, 0, 0, 0],
+          backgroundColor: ["#3F7F6F", "#56C1AC", "#FF4B4B", "#00C853", "#10282D"]
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          y: {
+            beginAtZero: true
+          }
+        }
+      }
+    });
+
+    function updateModel() {
+      const vals = {};
+      for (const key in inputElements) {
+        vals[key] = parseFloat(inputElements[key].value) || 0;
+      }
+
+      const costSynth = vals.numVariants * vals.costPerVariant;
+      const costLost = vals.numVariants * (1 - vals.pctCorrect) * vals.costPerVariant;
+      const costDelay = vals.delayWeeks * 5 * 8 * vals.fteCostPerHour;
+      const costResearcher = vals.fteHours * vals.fteCostPerHour;
+      const total = costSynth + costLost + costDelay + costResearcher + vals.costSeq;
+
+      chart.data.datasets[0].data = [
+        costSynth,
+        costLost,
+        costDelay,
+        costResearcher,
+        vals.costSeq
+      ];
+      chart.update();
+
+      costDisplay.textContent = `Total Cost: $${total.toFixed(2)}`;
+    }
+
+    // Initial run
+    updateModel();
+  </script>
+</body>
+</html>
