@@ -23,9 +23,9 @@ import scipy.stats as stats
 from scipy.stats import skew, nbinom
 
 # --- App Title and Description ---
-st.title("Cassette Pool QC Explorer")
+st.title("CREATE Cassette Pool QC Explorer")
 st.markdown("""
-This app loads cassette hit matrices and cassette library metadata, allowing interactive exploration, grouping by P2, and cross-amplification analysis.
+This app loads cassette hit matrices and cassette library metadata, allowing interactive exploration, grouping by subpool/P2, and cross-amplification analysis.
 """)
 
 # --- File Loaders ---
@@ -80,9 +80,21 @@ else:
     st.error("Library file(s) must contain 'mutantname' or 'CassetteDescription' column.")
     st.stop()
 
-if 'P2' not in library_df.columns:
-    st.error("Library file(s) must contain a 'P2' column for grouping.")
+# --- Select Grouping Column ---
+st.sidebar.header("Grouping Options")
+available_columns = [col for col in library_df.columns if col != cassette_id_col]
+default_grouping_col = 'P2' if 'P2' in available_columns else available_columns[0] if available_columns else None
+
+if not available_columns:
+    st.error("Library file(s) must contain at least one column for grouping besides the cassette identifier.")
     st.stop()
+
+grouping_col = st.sidebar.selectbox(
+    "Select column for grouping/subpool analysis",
+    available_columns,
+    index=available_columns.index(default_grouping_col) if default_grouping_col in available_columns else 0,
+    help="Choose which column to use for grouping cassettes (e.g., P2, subpool, etc.)"
+)
 
 # --- Load Hit Matrix ---
 if hit_matrix_file is not None:
@@ -107,7 +119,7 @@ all_hits_reset = all_hits.reset_index().rename(columns={all_hits.index.name or '
 # Merge on cassette_id_col
 merged_hits = pd.merge(
     all_hits_reset,
-    library_df[[cassette_id_col, 'P2']],
+    library_df[[cassette_id_col, grouping_col]],
     on=cassette_id_col,
     how='left',
     indicator=True
@@ -142,20 +154,20 @@ heatmap_df = merged_hits.pivot_table(
     fill_value=0
 )
 
-# Attach P2 info for each cassette (column)
-cassette_p2_map = library_df.set_index(cassette_id_col)['P2'].to_dict()
-p2_for_cassette = [cassette_p2_map.get(cid, 'Unknown') for cid in heatmap_df.columns]
+# Attach grouping info for each cassette (column)
+cassette_group_map = library_df.set_index(cassette_id_col)[grouping_col].to_dict()
+group_for_cassette = [cassette_group_map.get(cid, 'Unknown') for cid in heatmap_df.columns]
 
 # --- UI Controls for Filtering ---
-unique_p2 = sorted(set(p2_for_cassette))
-selected_p2 = st.multiselect("Filter cassettes by P2 group", unique_p2, default=unique_p2)
+unique_groups = sorted(set(group_for_cassette))
+selected_groups = st.multiselect(f"Filter cassettes by {grouping_col} group", unique_groups, default=unique_groups)
 
-# Filter columns (cassettes) by selected P2
-def cassette_in_selected_p2(cid):
-    return cassette_p2_map.get(cid, 'Unknown') in selected_p2
-filtered_cassettes = [cid for cid in heatmap_df.columns if cassette_in_selected_p2(cid)]
+# Filter columns (cassettes) by selected groups
+def cassette_in_selected_group(cid):
+    return cassette_group_map.get(cid, 'Unknown') in selected_groups
+filtered_cassettes = [cid for cid in heatmap_df.columns if cassette_in_selected_group(cid)]
 filtered_heatmap_df = heatmap_df[filtered_cassettes]
-filtered_p2_for_cassette = [cassette_p2_map.get(cid, 'Unknown') for cid in filtered_cassettes]
+filtered_group_for_cassette = [cassette_group_map.get(cid, 'Unknown') for cid in filtered_cassettes]
 
 # Optionally filter samples
 unique_samples = heatmap_df.index.tolist()
@@ -168,15 +180,15 @@ custom_palette = ['#17b6a7', '#1ccfc1', '#0b3b3e', '#2a7c7c', '#3e8e8e', '#5e9e9
 # Define monotonic navy-to-teal color scale for heatmaps
 navy_teal_scale = ['#0b3b3e', '#17b6a7']
 
-# --- Multi-select for P2 groups ---
-if 'P2' in library_df.columns:
-    all_p2s = sorted(library_df['P2'].dropna().unique())
-    selected_p2s = st.multiselect("Select P2 group(s) for analysis", all_p2s, default=all_p2s, key="p2_multiselect")
-    # Get cassettes in selected P2s
-    cassettes_in_p2 = set(library_df[library_df['P2'].isin(selected_p2s)][cassette_id_col])
+# --- Multi-select for grouping columns ---
+if grouping_col in library_df.columns:
+    all_groups = sorted(library_df[grouping_col].dropna().unique())
+    selected_groups_analysis = st.multiselect(f"Select {grouping_col} group(s) for analysis", all_groups, default=all_groups, key="group_multiselect")
+    # Get cassettes in selected groups
+    cassettes_in_group = set(library_df[library_df[grouping_col].isin(selected_groups_analysis)][cassette_id_col])
 else:
-    selected_p2s = []
-    cassettes_in_p2 = set(hit_df.index)
+    selected_groups_analysis = []
+    cassettes_in_group = set(hit_df.index)
 
 # --- Multi-select for samples ---
 if hit_matrix_file is not None:
@@ -195,25 +207,25 @@ with col1:
     if hit_matrix_file is not None and selected_samples:
         sample = selected_samples[0]
         sample_counts = hit_df[sample]
-        # Only plot cassettes with >0 reads and in selected P2s
-        filtered_cassettes = [cass for cass in hit_df.index if cass in cassettes_in_p2]
+        # Only plot cassettes with >0 reads and in selected groups
+        filtered_cassettes = [cass for cass in hit_df.index if cass in cassettes_in_group]
         sample_counts = sample_counts.loc[filtered_cassettes]
         nonzero_counts = sample_counts[sample_counts > 0]
         cassette_detected = nonzero_counts.count()
         total_reads = sample_counts.sum()
-        # Determine expected cassettes for this sample's P2 group
-        if 'P2' in library_df.columns:
-            cassette_to_p2 = library_df.set_index(cassette_id_col)['P2'].to_dict()
-            p2_counts = {}
+        # Determine expected cassettes for this sample's dominant group
+        if grouping_col in library_df.columns:
+            cassette_to_group = library_df.set_index(cassette_id_col)[grouping_col].to_dict()
+            group_counts = {}
             for cassette, count in sample_counts.items():
-                p2 = cassette_to_p2.get(cassette, None)
-                if p2 is not None:
-                    p2_counts[p2] = p2_counts.get(p2, 0) + count
-            expected_p2 = max(p2_counts, key=p2_counts.get) if p2_counts else None
-            expected_cassettes = library_df[library_df['P2'] == expected_p2][cassette_id_col].nunique() if expected_p2 else 0
+                group = cassette_to_group.get(cassette, None)
+                if group is not None:
+                    group_counts[group] = group_counts.get(group, 0) + count
+            expected_group = max(group_counts, key=group_counts.get) if group_counts else None
+            expected_cassettes = library_df[library_df[grouping_col] == expected_group][cassette_id_col].nunique() if expected_group else 0
             coverage = (cassette_detected / expected_cassettes * 100) if expected_cassettes > 0 else 0
         else:
-            expected_p2 = None
+            expected_group = None
             expected_cassettes = 0
             coverage = 0
         norm_factor = st.slider("Fit normalization (scales fit line)", min_value=0.1, max_value=3.0, value=1.0, step=0.01, key="hist_norm")
@@ -260,7 +272,7 @@ with col1:
 with col2:
     st.header("Coupon Collector Simulation: Unique Mutations vs. Samplings")
     if hit_matrix_file is not None and selected_samples:
-        cassette_names = [cass for cass in hit_df.index if cass in cassettes_in_p2]
+        cassette_names = [cass for cass in hit_df.index if cass in cassettes_in_group]
         # Empirical probabilities: sum read counts across selected samples, add pseudocount 1, normalize
         empirical_counts = hit_df.loc[cassette_names, selected_samples].sum(axis=1) + 1
         empirical_probs = empirical_counts / empirical_counts.sum()
@@ -393,10 +405,10 @@ with col2:
             All values above are scaled by the specified editing efficiency ({efficiency:.1f}%).
             
             **Sampling Source:**
-            The plot is currently sampling from the empirical distribution of cassettes in the selected samples and P2 group(s), with a pseudocount of 1 for zeros. This means the simulation reflects the actual observed abundance of each cassette in your data, not a uniform distribution.
+            The plot is currently sampling from the empirical distribution of cassettes in the selected samples and {grouping_col} group(s), with a pseudocount of 1 for zeros. This means the simulation reflects the actual observed abundance of each cassette in your data, not a uniform distribution.
             
             **Interpretation:**
-            This simulation models the process of randomly sampling cassettes from your pool, using the empirical distribution of read counts (with a pseudocount of 1 for zeros) from the selected samples and P2 group(s). The solid line shows the mean number of unique variants observed as more samplings are taken, averaged over multiple simulation runs, and scaled by the editing efficiency. The dashed line is the theoretical expectation if all cassettes were equally likely (equiprobable) for a library of size {lib_size}, also scaled by efficiency. Use this plot to guide how many samplings are needed to discover most or all variants, and to compare your pool's diversity to the ideal.
+            This simulation models the process of randomly sampling cassettes from your pool, using the empirical distribution of read counts (with a pseudocount of 1 for zeros) from the selected samples and {grouping_col} group(s). The solid line shows the mean number of unique variants observed as more samplings are taken, averaged over multiple simulation runs, and scaled by the editing efficiency. The dashed line is the theoretical expectation if all cassettes were equally likely (equiprobable) for a library of size {lib_size}, also scaled by efficiency. Use this plot to guide how many samplings are needed to discover most or all variants, and to compare your pool's diversity to the ideal.
             
             **Key Considerations:**
             - The empirical simulation is influenced by the actual abundance and dropout of cassettes in your data, including technical and biological biases.
@@ -406,32 +418,376 @@ with col2:
             """
         )
 
-# --- Heatmap: Samples x P2 Groups ---
-st.header("Sample x Subpool (P2) Heatmap")
+# --- Heatmap: Samples x Grouping Column ---
+st.header(f"Sample x {grouping_col} Heatmap")
 # hit_df: index = cassette, columns = samples
-# Need: rows = samples, columns = P2, values = sum of hits for all cassettes in that P2 for that sample
-if hit_matrix_file is not None and 'P2' in library_df.columns:
-    # Map cassette to P2
-    cassette_to_p2 = library_df.set_index(cassette_id_col)['P2'].to_dict()
-    # Build a new DataFrame: rows = samples, columns = all P2s from library
+# Need: rows = samples, columns = grouping values, values = sum of hits for all cassettes in that group for that sample
+if hit_matrix_file is not None and grouping_col in library_df.columns:
+    # Map cassette to grouping column
+    cassette_to_group = library_df.set_index(cassette_id_col)[grouping_col].to_dict()
+    # Build a new DataFrame: rows = samples, columns = all groups from library
     sample_names = hit_df.columns.tolist()
-    p2_groups = sorted(library_df['P2'].dropna().unique())
-    sample_p2_matrix = pd.DataFrame(0, index=sample_names, columns=p2_groups)
+    groups = sorted(library_df[grouping_col].dropna().unique())
+    sample_group_matrix = pd.DataFrame(0, index=sample_names, columns=groups)
     for cassette, row in hit_df.iterrows():
-        p2 = cassette_to_p2.get(cassette, None)
-        if p2 in p2_groups:
+        group = cassette_to_group.get(cassette, None)
+        if group in groups:
             for sample in sample_names:
-                sample_p2_matrix.at[sample, p2] += row[sample]
-    # Ensure all P2 columns are present, even if all zeros
-    for p2 in p2_groups:
-        if p2 not in sample_p2_matrix.columns:
-            sample_p2_matrix[p2] = 0
-    sample_p2_matrix = sample_p2_matrix[p2_groups]  # Ensure column order
+                sample_group_matrix.at[sample, group] += row[sample]
+    # Ensure all group columns are present, even if all zeros
+    for group in groups:
+        if group not in sample_group_matrix.columns:
+            sample_group_matrix[group] = 0
+    sample_group_matrix = sample_group_matrix[groups]  # Ensure column order
     fig2 = px.imshow(
-        sample_p2_matrix,
-        labels=dict(x="Subpool (P2)", y="Sample", color="Total Hits"),
+        sample_group_matrix,
+        labels=dict(x=f"{grouping_col}", y="Sample", color="Total Hits"),
         color_continuous_scale=navy_teal_scale,
         aspect='auto',
-        title="Sample x Subpool (P2) Total Hits Heatmap"
+        title=f"Sample x {grouping_col} Total Hits Heatmap"
     )
-    st.plotly_chart(fig2, use_container_width=True) 
+    st.plotly_chart(fig2, use_container_width=True)
+
+# --- GC Content vs Count Abundance Plot ---
+st.header("GC Content vs Count Abundance")
+if hit_matrix_file is not None and selected_samples:
+    # Check for GC content column in library
+    gc_col = None
+    possible_gc_cols = ['GC_content', 'GC%', 'GC_percent', 'gc_content', 'gc%', 'gc_percent', 'GC']
+    for col in possible_gc_cols:
+        if col in library_df.columns:
+            gc_col = col
+            break
+    
+    # If no GC column found, try to calculate from sequence columns
+    if gc_col is None:
+        sequence_cols = [col for col in library_df.columns if 'seq' in col.lower() or 'sequence' in col.lower()]
+        if sequence_cols:
+            seq_col = st.selectbox("Select sequence column for GC calculation", sequence_cols)
+            if seq_col in library_df.columns:
+                def calculate_gc_content(sequence):
+                    if pd.isna(sequence):
+                        return np.nan
+                    sequence = str(sequence).upper()
+                    gc_count = sequence.count('G') + sequence.count('C')
+                    total_count = len([base for base in sequence if base in 'ATGC'])
+                    return (gc_count / total_count * 100) if total_count > 0 else np.nan
+                
+                library_df['calculated_GC'] = library_df[seq_col].apply(calculate_gc_content)
+                gc_col = 'calculated_GC'
+                st.info(f"GC content calculated from {seq_col} column")
+    
+    if gc_col is not None:
+        # Get total counts per cassette across selected samples
+        cassette_total_counts = hit_df[selected_samples].sum(axis=1)
+        # Filter for cassettes in selected groups
+        filtered_cassettes_gc = [cass for cass in cassette_total_counts.index if cass in cassettes_in_group]
+        cassette_total_counts = cassette_total_counts.loc[filtered_cassettes_gc]
+        
+        # Merge with GC content data
+        gc_data = library_df.set_index(cassette_id_col)[gc_col].to_dict()
+        
+        # Create data for plotting
+        plot_data = []
+        for cassette in cassette_total_counts.index:
+            gc_content = gc_data.get(cassette, np.nan)
+            count = cassette_total_counts[cassette]
+            if not pd.isna(gc_content) and count > 0:  # Only include cassettes with valid GC and >0 counts
+                plot_data.append({
+                    'Cassette': cassette,
+                    'GC_Content': gc_content,
+                    'Total_Count': count,
+                    'Log_Total_Count': np.log10(count + 1)  # Add 1 to avoid log(0)
+                })
+        
+        if plot_data:
+            plot_df = pd.DataFrame(plot_data)
+            
+            # Create GC content bins
+            bin_size = st.slider("GC bin size (%)", min_value=1.0, max_value=10.0, value=2.5, step=0.5, key="gc_bin_size")
+            
+            # Calculate bin edges
+            min_gc = plot_df['GC_Content'].min()
+            max_gc = plot_df['GC_Content'].max()
+            bin_edges = np.arange(np.floor(min_gc / bin_size) * bin_size, 
+                                np.ceil(max_gc / bin_size) * bin_size + bin_size, 
+                                bin_size)
+            
+            # Create bins for observed data
+            plot_df['GC_Bin'] = pd.cut(plot_df['GC_Content'], bins=bin_edges, right=False)
+            observed_binned = plot_df.groupby('GC_Bin', observed=True).agg({
+                'Total_Count': 'sum',
+                'Cassette': 'count'
+            }).reset_index()
+            
+            # Create bins for ALL cassettes in the library (expected distribution)
+            # Get GC content for all cassettes in selected groups
+            all_cassettes_in_group = library_df[library_df[grouping_col].isin(selected_groups_analysis)]
+            all_gc_data = []
+            for _, row in all_cassettes_in_group.iterrows():
+                cassette_id = row[cassette_id_col]
+                gc_content = row[gc_col] if pd.notna(row[gc_col]) else None
+                if gc_content is not None:
+                    all_gc_data.append({
+                        'Cassette': cassette_id,
+                        'GC_Content': gc_content
+                    })
+            
+            if all_gc_data:
+                all_gc_df = pd.DataFrame(all_gc_data)
+                all_gc_df['GC_Bin'] = pd.cut(all_gc_df['GC_Content'], bins=bin_edges, right=False)
+                expected_binned = all_gc_df.groupby('GC_Bin', observed=True).agg({
+                    'Cassette': 'count'
+                }).reset_index()
+                expected_binned.rename(columns={'Cassette': 'Expected_Cassettes'}, inplace=True)
+                
+                # Ensure both dataframes have the same categorical bins
+                all_bins = list(set(observed_binned['GC_Bin'].cat.categories) | set(expected_binned['GC_Bin'].cat.categories))
+                observed_binned['GC_Bin'] = observed_binned['GC_Bin'].cat.add_categories([cat for cat in all_bins if cat not in observed_binned['GC_Bin'].cat.categories])
+                expected_binned['GC_Bin'] = expected_binned['GC_Bin'].cat.add_categories([cat for cat in all_bins if cat not in expected_binned['GC_Bin'].cat.categories])
+                
+                # Merge observed and expected
+                binned_data = pd.merge(observed_binned, expected_binned, on='GC_Bin', how='outer')
+                
+                # Fill NaN values appropriately (avoiding categorical issues)
+                binned_data['Total_Count'] = binned_data['Total_Count'].fillna(0).astype(float)
+                binned_data['Cassette'] = binned_data['Cassette'].fillna(0).astype(float)
+                binned_data['Expected_Cassettes'] = binned_data['Expected_Cassettes'].fillna(0).astype(float)
+                
+                # Calculate normalization metrics
+                total_observed_reads = binned_data['Total_Count'].sum()
+                total_expected_cassettes = binned_data['Expected_Cassettes'].sum()
+                
+                # Calculate observed and expected frequencies
+                binned_data['Observed_Freq'] = binned_data['Total_Count'] / total_observed_reads
+                binned_data['Expected_Freq'] = binned_data['Expected_Cassettes'] / total_expected_cassettes
+                
+                # Calculate normalized ratio (observed/expected)
+                binned_data['Normalization_Ratio'] = np.where(
+                    binned_data['Expected_Freq'] > 0,
+                    binned_data['Observed_Freq'] / binned_data['Expected_Freq'],
+                    np.nan
+                )
+                
+                # Calculate reads per cassette
+                binned_data['Reads_Per_Cassette'] = np.where(
+                    binned_data['Expected_Cassettes'] > 0,
+                    binned_data['Total_Count'] / binned_data['Expected_Cassettes'],
+                    0
+                )
+            else:
+                # Fallback if no expected data available
+                binned_data = observed_binned.copy()
+                binned_data['Expected_Cassettes'] = binned_data['Cassette']
+                binned_data['Normalization_Ratio'] = 1.0
+                binned_data['Reads_Per_Cassette'] = binned_data['Total_Count'] / binned_data['Cassette']
+            
+            # Create bin labels for plotting
+            binned_data['GC_Bin_Label'] = binned_data['GC_Bin'].apply(
+                lambda x: f"{x.left:.1f}-{x.right:.1f}%" if pd.notna(x) else "Unknown"
+            )
+            binned_data['GC_Bin_Mid'] = binned_data['GC_Bin'].apply(
+                lambda x: (x.left + x.right) / 2 if pd.notna(x) else np.nan
+            )
+            
+            # Normalization options
+            col1, col2 = st.columns(2)
+            with col1:
+                normalization_mode = st.selectbox(
+                    "Display mode",
+                    ["Raw Counts", "Normalized Ratio", "Reads per Cassette"],
+                    key="gc_norm_mode",
+                    help="Raw Counts: Total reads per bin\nNormalized Ratio: (Observed frequency / Expected frequency)\nReads per Cassette: Average reads per cassette in each bin"
+                )
+            with col2:
+                log_scale = st.checkbox("Use log scale for y-axis", value=False, key="gc_log_scale")
+            
+            # Set up plot data based on normalization mode
+            if normalization_mode == "Raw Counts":
+                plot_column = 'Total_Count'
+                base_y_title = 'Total Count'
+            elif normalization_mode == "Normalized Ratio":
+                plot_column = 'Normalization_Ratio' 
+                base_y_title = 'Observed/Expected Ratio'
+            else:  # Reads per Cassette
+                plot_column = 'Reads_Per_Cassette'
+                base_y_title = 'Reads per Cassette'
+            
+            if log_scale and normalization_mode != "Normalized Ratio":
+                binned_data['Plot_Count'] = np.log10(binned_data[plot_column] + 1)
+                y_axis_title = f'Log10({base_y_title} + 1)'
+            elif normalization_mode == "Normalized Ratio":
+                binned_data['Plot_Count'] = binned_data[plot_column]
+                y_axis_title = base_y_title
+                if log_scale:
+                    st.info("Log scale not applied to normalized ratios (ratios can be < 1)")
+            else:
+                binned_data['Plot_Count'] = binned_data[plot_column]
+                y_axis_title = base_y_title
+            
+            # Create histogram
+            hover_data_dict = {
+                'GC_Bin_Label': True,
+                'Total_Count': True,
+                'Expected_Cassettes': ':.0f',
+                'Normalization_Ratio': ':.2f',
+                'Reads_Per_Cassette': ':.1f',
+                'GC_Bin_Mid': False,
+                'Plot_Count': False
+            }
+            
+            # Add observed cassettes if different from expected
+            if 'Cassette' in binned_data.columns:
+                hover_data_dict['Cassette'] = ':.0f'
+            
+            fig3 = px.bar(
+                binned_data,
+                x='GC_Bin_Mid',
+                y='Plot_Count',
+                hover_data=hover_data_dict,
+                labels={
+                    'GC_Bin_Mid': 'GC Content (%)',
+                    'Plot_Count': y_axis_title,
+                    'Cassette': 'Observed cassettes',
+                    'Expected_Cassettes': 'Expected cassettes',
+                    'Total_Count': 'Total reads',
+                    'Normalization_Ratio': 'Obs/Exp ratio',
+                    'Reads_Per_Cassette': 'Reads/cassette'
+                },
+                title=f'Count Abundance vs Binned GC Content - {normalization_mode} (Selected {grouping_col} Groups)',
+                color_discrete_sequence=['#17b6a7']
+            )
+            
+            # Update bar width to match bin size
+            fig3.update_traces(width=bin_size * 0.8)
+            
+            # Add reference line for normalized ratio
+            if normalization_mode == "Normalized Ratio":
+                fig3.add_hline(
+                    y=1.0, 
+                    line_dash="dash", 
+                    line_color="#0b3b3e",
+                    annotation_text="Expected (ratio = 1.0)",
+                    annotation_position="top right"
+                )
+            
+            fig3.update_layout(
+                xaxis_title='GC Content (%)',
+                yaxis_title=y_axis_title,
+                showlegend=False
+            )
+            
+            st.plotly_chart(fig3, use_container_width=True)
+            
+            # Summary statistics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                observed_cassettes = len(plot_df)
+                expected_cassettes = int(binned_data['Expected_Cassettes'].sum())
+                st.metric("Cassettes", f"{observed_cassettes:,} obs / {expected_cassettes:,} exp")
+            with col2:
+                st.metric("Total reads", f"{plot_df['Total_Count'].sum():,}")
+            with col3:
+                st.metric("Mean GC%", f"{plot_df['GC_Content'].mean():.1f}")
+            with col4:
+                st.metric("GC% range", f"{plot_df['GC_Content'].min():.1f} - {plot_df['GC_Content'].max():.1f}")
+            
+            # Show top/bottom bins based on current display mode
+            if normalization_mode == "Normalized Ratio":
+                # Filter out NaN ratios for top/bottom calculation
+                valid_ratios = binned_data.dropna(subset=['Normalization_Ratio'])
+                if len(valid_ratios) > 0:
+                    top_bin = valid_ratios.loc[valid_ratios['Normalization_Ratio'].idxmax()]
+                    bottom_bin = valid_ratios.loc[valid_ratios['Normalization_Ratio'].idxmin()]
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.success(f"**Most over-represented:** {top_bin['GC_Bin_Label']} (ratio: {top_bin['Normalization_Ratio']:.2f})")
+                    with col2:
+                        st.warning(f"**Most under-represented:** {bottom_bin['GC_Bin_Label']} (ratio: {bottom_bin['Normalization_Ratio']:.2f})")
+                        
+            elif normalization_mode == "Reads per Cassette":
+                top_bin = binned_data.loc[binned_data['Reads_Per_Cassette'].idxmax()]
+                bottom_bin = binned_data.loc[binned_data['Reads_Per_Cassette'].idxmin()]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.info(f"**Highest reads/cassette:** {top_bin['GC_Bin_Label']} ({top_bin['Reads_Per_Cassette']:.1f} reads/cassette)")
+                with col2:
+                    st.info(f"**Lowest reads/cassette:** {bottom_bin['GC_Bin_Label']} ({bottom_bin['Reads_Per_Cassette']:.1f} reads/cassette)")
+                    
+            else:  # Raw counts
+                top_bin = binned_data.loc[binned_data['Total_Count'].idxmax()]
+                bottom_bin = binned_data.loc[binned_data['Total_Count'].idxmin()]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    obs_cassettes = top_bin.get('Cassette', 0)
+                    exp_cassettes = top_bin['Expected_Cassettes']
+                    st.info(f"**Highest abundance bin:** {top_bin['GC_Bin_Label']} ({top_bin['Total_Count']:,} reads, {obs_cassettes:.0f}/{exp_cassettes:.0f} cassettes)")
+                with col2:
+                    obs_cassettes = bottom_bin.get('Cassette', 0)
+                    exp_cassettes = bottom_bin['Expected_Cassettes']
+                    st.info(f"**Lowest abundance bin:** {bottom_bin['GC_Bin_Label']} ({bottom_bin['Total_Count']:,} reads, {obs_cassettes:.0f}/{exp_cassettes:.0f} cassettes)")
+                
+            # Dynamic interpretation based on normalization mode
+            if normalization_mode == "Raw Counts":
+                interpretation = f"""
+                **Interpretation (Raw Counts):**
+                This histogram shows the total read abundance across different GC content bins for cassettes in the selected {grouping_col} group(s).
+                
+                - **X-axis:** GC content bins ({bin_size}% wide)
+                - **Y-axis:** Total read counts per bin
+                - **Expected vs Observed:** Shows both expected cassette count (library design) and observed cassettes (with reads)
+                
+                **What to look for:**
+                - **High abundance bins:** May reflect library design (more cassettes) or technical bias
+                - **Compare obs/exp cassettes:** Shows which GC ranges have dropout (obs < exp)
+                """
+                
+            elif normalization_mode == "Normalized Ratio":
+                interpretation = f"""
+                **Interpretation (Normalized Ratio):**
+                This histogram shows the observed vs expected read frequency for each GC bin, normalized by library design.
+                
+                - **X-axis:** GC content bins ({bin_size}% wide)
+                - **Y-axis:** Observed frequency / Expected frequency ratio
+                - **Ratio = 1.0 (dashed line):** Perfect match between observed and expected
+                - **Ratio > 1.0:** Over-represented (more reads than expected based on cassette count)
+                - **Ratio < 1.0:** Under-represented (fewer reads than expected)
+                
+                **What to look for:**
+                - **Even ratios near 1.0:** Minimal GC bias - ideal performance
+                - **High ratios:** GC ranges with amplification/sequencing preference  
+                - **Low ratios:** GC ranges with amplification/sequencing bias against them
+                """
+                
+            else:  # Reads per Cassette
+                interpretation = f"""
+                **Interpretation (Reads per Cassette):**
+                This histogram shows the average read count per cassette within each GC bin.
+                
+                - **X-axis:** GC content bins ({bin_size}% wide)  
+                - **Y-axis:** Average reads per cassette in each bin
+                - **Normalization:** Accounts for different numbers of cassettes per bin
+                
+                **What to look for:**
+                - **Even bars:** Each cassette gets similar read coverage regardless of GC content
+                - **High bars:** GC ranges where individual cassettes get more reads on average
+                - **Low bars:** GC ranges where individual cassettes get fewer reads (potential bias)
+                """
+            
+            st.markdown(f"""
+            {interpretation}
+            
+            **Technical considerations:**
+            - **PCR bias:** Amplification efficiency typically decreases at very high (>60%) or very low (<35%) GC content
+            - **Sequencing bias:** Some platforms have GC-dependent coverage biases  
+            - **Library design:** Your original cassette distribution across GC ranges affects expectations
+            - **Ideal scenario:** Normalized ratios near 1.0 or even reads/cassette across GC ranges
+            - **Troubleshooting:** Large deviations may indicate need for PCR or library prep optimization
+            """)
+        else:
+            st.warning("No cassettes with valid GC content and count data found for plotting.")
+    else:
+        st.warning("No GC content column found in library data. To add GC content analysis, include a column named 'GC_content', 'GC%', or similar, or provide a sequence column for automatic calculation.") 
